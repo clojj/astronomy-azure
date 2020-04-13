@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import org.springframework.web.client.RestTemplate
+import org.springframework.web.reactive.function.client.WebClient
 
 
 @EnableDiscoveryClient
@@ -15,8 +15,8 @@ import org.springframework.web.client.RestTemplate
 class DemoServerApplication {
 
     @Bean
-    fun restTemplate(): RestTemplate {
-        return RestTemplate()
+    fun webClient(): WebClient {
+        return WebClient.create()
     }
 
 }
@@ -27,13 +27,17 @@ fun main(args: Array<String>) {
 
 @RestController
 @RequestMapping("/demo")
-class Controller(val restTemplate: RestTemplate) {
+class Controller(val webClient: WebClient) {
 
     @GetMapping("/hello")
     fun hello(): String {
         val url = "http://astronomy-service:8080/stars/test"
-        val responseEntity = restTemplate.getForEntity(url, String::class.java)
-        return "response from astronomy-service via Discovery Client.... " + responseEntity.body
+        val response = webClient.get()
+            .uri(url)
+            .retrieve()
+            .bodyToMono(String::class.java)
+            .block()
+        return "response from astronomy-service via Discovery Client and WebClient $webClient $response"
     }
 
 }
