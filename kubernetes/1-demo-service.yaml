@@ -1,0 +1,50 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-service
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-resource-group: astronomy-resource-group
+    service.beta.kubernetes.io/azure-dns-label-name: comgithubclojjaksastronomy
+  labels:
+    project: astronomy
+    tier: backend
+    app: demo-service
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    project: astronomy
+    tier: backend
+    app: demo-service
+status:
+  loadBalancer: {}
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  labels:
+    project: astronomy
+    tier: backend
+    app: demo-service
+  name: demo-service
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        project: astronomy
+        tier: backend
+        app: demo-service
+    spec:
+      containers:
+      - name: demo-service
+        image: ${CONTAINER_REGISTRY}.azurecr.io/demo-server:${IMAGE_TAG}
+        ports:
+        - containerPort: 8080
+        imagePullPolicy: Always
+      restartPolicy: Always
