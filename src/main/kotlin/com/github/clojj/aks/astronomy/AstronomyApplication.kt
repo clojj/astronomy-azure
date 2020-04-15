@@ -3,9 +3,9 @@ package com.github.clojj.aks.astronomy
 import arrow.core.Option
 import arrow.core.extensions.fx
 import arrow.core.fix
+import arrow.core.getOrElse
 import arrow.core.toOption
 import kotlinx.coroutines.*
-import kotlinx.coroutines.NonCancellable.isActive
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.boot.runApplication
@@ -52,51 +52,57 @@ class Controller(val coScheduler: CoScheduler) {
 }
 
 @InternalCoroutinesApi
-@ExperimentalTime
-suspend inline fun <T> scheduleRepeatingUntilNull(
-    from: Long,
-    interval: Long,
-    crossinline action: (T?) -> T?,
-    initialValue: T?
+suspend fun <T> schedule(
+    startInMillis: Long = 0,
+    intervalMillis: Long,
+    action: (T) -> T,
+    initialValue: T,
+    condition: (T) -> Boolean
 ) {
-    delay(from)
-    var result: T? = initialValue
-    while (result != null && isActive) {
-        result = action(result)
-        delay(interval)
+    suspend fun theLoop(value: T) {
+        delay(intervalMillis)
+        val newvalue = action(value)
+        if (condition(newvalue) && NonCancellable.isActive) {
+            theLoop(newvalue)
+        }
     }
+
+    delay(startInMillis)
+    theLoop(initialValue)
 }
 
 
 @InternalCoroutinesApi
-@ExperimentalTime
 @Component
 class CoScheduler(val configProperties: ConfigProperties) {
 
-    private val GITHUB_V3_MIME_TYPE = "application/vnd.github.v3+json"
-    private val GITHUB_API_BASE_URL = "https://api.github.com"
+    private companion object {
+        private const val GITHUB_V3_MIME_TYPE = "application/vnd.github.v3+json"
+        private const val GITHUB_API_BASE_URL = "https://api.github.com"
+        private const val pagingFinished = "-FINISHED-"
+    }
 
+    // TODO use reactive WebClient for denser requests
     private val restTemplate = RestTemplate()
 
-    val headers = HttpEntity<Any>(HttpHeaders().apply {
+    private val headers = HttpEntity<Any>(HttpHeaders().apply {
         accept = listOf(MediaType.APPLICATION_JSON)
         contentType = MediaType.parseMediaType(GITHUB_V3_MIME_TYPE)
         setBasicAuth(HttpHeaders.encodeBasicAuth("clojj", configProperties.token, null))
     })
 
-    val retrieveStarredPage: (String?) -> String? =
-        { next: String? ->
+
+    val retrieveStarredPage: (String) -> String =
+        { next: String ->
             // TODO handle errors and timeout
+            println(next)
             val responseEntity = restTemplate.exchange(URI(next), HttpMethod.GET, headers, Array<Repository>::class.java)
 
             Option.fx {
                 val linkHeader = !responseEntity.headers["Link"].toOption()
-                println(linkHeader)
-                val headerValue: String = linkHeader[0] // TODO merge with line above ?
-                val relNext = !headerValue.split(",").firstOrNull { it.contains("rel=\"next\"") }.toOption()
-                println(relNext)
+                val relNext = !linkHeader[0].split(",").firstOrNull { it.contains("rel=\"next\"") }.toOption()
                 relNext.substring(relNext.indexOf("http"), relNext.indexOf(">;"))
-            }.fix().orNull()
+            }.fix().getOrElse { pagingFinished }
         }
 
     private val scope = CoroutineScope(Job() + Executors.newSingleThreadExecutor().asCoroutineDispatcher() + CoroutineName("parent scope for scheduled job"))
@@ -111,7 +117,7 @@ class CoScheduler(val configProperties: ConfigProperties) {
         // TODO extract coroutine-based scheduling lib
         schedulerJob = with(scope) {
             launch {
-                scheduleRepeatingUntilNull(1000, 1000, retrieveStarredPage, "${GITHUB_API_BASE_URL}/user/starred")
+                schedule(intervalMillis = 1000, action = retrieveStarredPage, initialValue = "${GITHUB_API_BASE_URL}/user/starred") { it != pagingFinished }
             }
         }
     }
