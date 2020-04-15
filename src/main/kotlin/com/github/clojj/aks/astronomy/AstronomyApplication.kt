@@ -1,5 +1,9 @@
 package com.github.clojj.aks.astronomy
 
+import arrow.core.Option
+import arrow.core.extensions.fx
+import arrow.core.fix
+import arrow.core.toOption
 import kotlinx.coroutines.*
 import kotlinx.coroutines.NonCancellable.isActive
 import org.springframework.boot.autoconfigure.SpringBootApplication
@@ -49,14 +53,15 @@ class Controller(val coScheduler: CoScheduler) {
 
 @InternalCoroutinesApi
 @ExperimentalTime
-suspend inline fun <T> scheduleRepeating(
+suspend inline fun <T> scheduleRepeatingUntilNull(
     from: Long,
     interval: Long,
-    crossinline action: (T?) -> T?
+    crossinline action: (T?) -> T?,
+    initialValue: T?
 ) {
     delay(from)
-    var result: T? = null
-    while (isActive) {
+    var result: T? = initialValue
+    while (result != null && isActive) {
         result = action(result)
         delay(interval)
     }
@@ -73,10 +78,6 @@ class CoScheduler(val configProperties: ConfigProperties) {
 
     private val restTemplate = RestTemplate()
 
-    private val scope = CoroutineScope(Job() + Executors.newSingleThreadExecutor().asCoroutineDispatcher() + CoroutineName("parent scope for scheduled job"))
-
-    private lateinit var schedulerJob: Job
-
     val headers = HttpEntity<Any>(HttpHeaders().apply {
         accept = listOf(MediaType.APPLICATION_JSON)
         contentType = MediaType.parseMediaType(GITHUB_V3_MIME_TYPE)
@@ -86,23 +87,21 @@ class CoScheduler(val configProperties: ConfigProperties) {
     val retrieveStarredPage: (String?) -> String? =
         { next: String? ->
             // TODO handle errors and timeout
-            val url = next ?: "${GITHUB_API_BASE_URL}/user/starred"
-            val responseEntity = restTemplate.exchange(URI(url), HttpMethod.GET, headers, Array<Repository>::class.java)
+            val responseEntity = restTemplate.exchange(URI(next), HttpMethod.GET, headers, Array<Repository>::class.java)
 
-            // TODO propagate to next invocation
-            val linkHeader = responseEntity.headers["Link"]
-            linkHeader?.let {
-                val next: String? = it[0]
-                next?.let {
-                    val nextLink = it.split(",").firstOrNull { it.contains("rel=\"next\"") }
-                    nextLink?.let {
-                        val nextUrl = it.substring(it.indexOf("http"), it.indexOf(">;"))
-                        println("next $nextUrl")
-                        nextUrl
-                    }
-                }
-            }
+            Option.fx {
+                val linkHeader = !responseEntity.headers["Link"].toOption()
+                println(linkHeader)
+                val headerValue: String = linkHeader[0] // TODO merge with line above ?
+                val relNext = !headerValue.split(",").firstOrNull { it.contains("rel=\"next\"") }.toOption()
+                println(relNext)
+                relNext.substring(relNext.indexOf("http"), relNext.indexOf(">;"))
+            }.fix().orNull()
         }
+
+    private val scope = CoroutineScope(Job() + Executors.newSingleThreadExecutor().asCoroutineDispatcher() + CoroutineName("parent scope for scheduled job"))
+
+    private lateinit var schedulerJob: Job
 
     @EventListener
     fun start(event: ContextRefreshedEvent) {
@@ -112,7 +111,7 @@ class CoScheduler(val configProperties: ConfigProperties) {
         // TODO extract coroutine-based scheduling lib
         schedulerJob = with(scope) {
             launch {
-                scheduleRepeating(1000, 1000, retrieveStarredPage)
+                scheduleRepeatingUntilNull(1000, 1000, retrieveStarredPage, "${GITHUB_API_BASE_URL}/user/starred")
             }
         }
     }
